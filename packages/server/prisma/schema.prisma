@@ -1,0 +1,70 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id            String   @id @default(uuid())
+  username      String   @unique
+  passwordHash  String
+  encPublicKey  String
+  signPublicKey String
+  createdAt     DateTime @default(now())
+  contacts      Contact[] @relation("UserContacts")
+  contactOf     Contact[] @relation("ContactUser")
+  ownedGroups   Group[]   @relation("GroupOwner")
+  memberships   GroupMember[]
+  ownedChannels Channel[] @relation("ChannelOwner")
+}
+
+model Contact {
+  id        String @id @default(uuid())
+  userId    String
+  contactId String
+  alias     String?
+  createdAt DateTime @default(now())
+  user      User @relation("UserContacts", fields: [userId], references: [id])
+  contact   User @relation("ContactUser", fields: [contactId], references: [id])
+  @@unique([userId, contactId])
+}
+
+model Group {
+  id        String   @id @default(uuid())
+  name      String
+  ownerId   String
+  createdAt DateTime @default(now())
+  owner     User     @relation("GroupOwner", fields: [ownerId], references: [id])
+  members   GroupMember[]
+}
+
+model GroupMember {
+  groupId  String
+  userId   String
+  role     String   @default("member")
+  joinedAt DateTime @default(now())
+  group    Group    @relation(fields: [groupId], references: [id])
+  user     User     @relation(fields: [userId], references: [id])
+  @@id([groupId, userId])
+}
+
+model Channel {
+  id               String   @id @default(uuid())
+  name             String
+  ownerId          String
+  channelPublicKey String?
+  createdAt        DateTime @default(now())
+  owner            User     @relation("ChannelOwner", fields: [ownerId], references: [id])
+  subscribers      ChannelSubscriber[]
+}
+
+model ChannelSubscriber {
+  channelId String
+  userId    String
+  joinedAt  DateTime @default(now())
+  channel   Channel  @relation(fields: [channelId], references: [id])
+  @@id([channelId, userId])
+}

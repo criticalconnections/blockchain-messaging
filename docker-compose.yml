@@ -1,0 +1,91 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: bm_user
+      POSTGRES_PASSWORD: bm_password
+      POSTGRES_DB: blockchain_messaging
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    networks:
+      - bm-network
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U bm_user -d blockchain_messaging']
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    volumes:
+      - redis-data:/data
+    networks:
+      - bm-network
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  blockchain-node:
+    build:
+      context: .
+      dockerfile: docker/blockchain-node.Dockerfile
+    environment:
+      PORT: '8001'
+      DATA_DIR: /app/data/blockchain
+      BLOCK_INTERVAL_MS: '5000'
+      MAX_BLOCK_SIZE: '100'
+      PRUNE_INTERVAL_MS: '60000'
+    volumes:
+      - blockchain-data:/app/data
+    networks:
+      - bm-network
+    healthcheck:
+      test: ['CMD', 'wget', '--spider', '-q', 'http://localhost:8001/health']
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  api-server:
+    build:
+      context: .
+      dockerfile: docker/api-server.Dockerfile
+    environment:
+      PORT: '3001'
+      NODE_ENV: production
+      DATABASE_URL: postgresql://bm_user:bm_password@postgres:5432/blockchain_messaging
+      REDIS_URL: redis://redis:6379
+      JWT_SECRET: ${JWT_SECRET:-change-me-in-production-use-256-bit-random}
+      JWT_EXPIRES_IN: 7d
+      BLOCKCHAIN_NODE_URL: http://blockchain-node:8001
+      BLOCKCHAIN_WS_URL: ws://blockchain-node:8001
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      blockchain-node:
+        condition: service_healthy
+    networks:
+      - bm-network
+
+  frontend:
+    build:
+      context: .
+      dockerfile: docker/client.Dockerfile
+    ports:
+      - '80:80'
+    depends_on:
+      - api-server
+    networks:
+      - bm-network
+
+volumes:
+  postgres-data:
+  redis-data:
+  blockchain-data:
+
+networks:
+  bm-network:
+    driver: bridge

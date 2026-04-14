@@ -1,0 +1,33 @@
+{
+  "name": "@bm/blockchain",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "start": "node dist/node.js",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@bm/crypto": "*",
+    "classic-level": "^1.4.0",
+    "express": "^4.19.0",
+    "uuid": "^9.0.0",
+    "ws": "^8.16.0"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.21",
+    "@types/uuid": "^9.0.8",
+    "@types/ws": "^8.5.10",
+    "vitest": "^1.4.0"
+  }
+}
