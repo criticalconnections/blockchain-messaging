@@ -9,7 +9,7 @@ import {
 } from '@bm/crypto';
 import { api, type UserPublic } from '../api/http.js';
 import { wsClient } from '../api/ws.js';
-import { storeIdentity, clearKeyStore } from '../crypto/keystore.js';
+import { storeIdentity, getIdentity, clearKeyStore } from '../crypto/keystore.js';
 import { clearSessionCache } from '../crypto/session.js';
 
 const encoder = new TextEncoder();
@@ -91,6 +91,32 @@ export const useAuthStore = create<AuthState>((set) => ({
       localStorage.setItem('bm-token', res.token);
       localStorage.setItem('bm-user', JSON.stringify(res.user));
       wsClient.connect(res.token);
+
+      // Publish identity to blockchain for cross-peer discovery
+      try {
+        const identity = await getIdentity();
+        if (identity) {
+          const id = uuidv4();
+          const timestamp = Date.now();
+          const senderKey = publicKeyToBase64(identity.signPublicKey);
+          const payload = JSON.stringify({
+            username: res.user.username,
+            encPublicKey: res.user.encPublicKey,
+          });
+          const signable: Record<string, unknown> = {
+            id,
+            type: 'KEY_PUBLISH',
+            sender: senderKey,
+            payload,
+            timestamp,
+          };
+          const canonical = canonicalize(signable);
+          const signature = signData(encoder.encode(canonical), identity.signSecretKey);
+          await api.messages.send({ id, type: 'KEY_PUBLISH', sender: senderKey, payload, timestamp, signature });
+        }
+      } catch {
+        // Non-fatal
+      }
 
       set({ user: res.user, token: res.token, loading: false });
     } catch (err) {
