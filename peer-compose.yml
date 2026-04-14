@@ -6,9 +6,9 @@ services:
       POSTGRES_PASSWORD: bm_password
       POSTGRES_DB: blockchain_messaging
     volumes:
-      - postgres-data:/var/lib/postgresql/data
+      - bm-peer-postgres:/var/lib/postgresql/data
     networks:
-      - bm-network
+      - bm-peer-net
     healthcheck:
       test: ['CMD-SHELL', 'pg_isready -U bm_user -d blockchain_messaging']
       interval: 5s
@@ -18,9 +18,9 @@ services:
   redis:
     image: redis:7-alpine
     volumes:
-      - redis-data:/data
+      - bm-peer-redis:/data
     networks:
-      - bm-network
+      - bm-peer-net
     healthcheck:
       test: ['CMD', 'redis-cli', 'ping']
       interval: 5s
@@ -37,11 +37,12 @@ services:
       BLOCK_INTERVAL_MS: '5000'
       MAX_BLOCK_SIZE: '100'
       PRUNE_INTERVAL_MS: '60000'
-      NODE_MODE: relay
+      NODE_MODE: peer
+      RELAY_URL: ${RELAY_URL}
     volumes:
-      - blockchain-data:/app/data
+      - bm-peer-blockchain:/app/data
     networks:
-      - bm-network
+      - bm-peer-net
     healthcheck:
       test: ['CMD', 'wget', '--spider', '-q', 'http://localhost:8001/health']
       interval: 5s
@@ -57,7 +58,7 @@ services:
       NODE_ENV: production
       DATABASE_URL: postgresql://bm_user:bm_password@postgres:5432/blockchain_messaging
       REDIS_URL: redis://redis:6379
-      JWT_SECRET: ${JWT_SECRET:-change-me-in-production-use-256-bit-random}
+      JWT_SECRET: ${JWT_SECRET:-change-me-in-production}
       JWT_EXPIRES_IN: 7d
       BLOCKCHAIN_NODE_URL: http://blockchain-node:8001
       BLOCKCHAIN_WS_URL: ws://blockchain-node:8001
@@ -69,7 +70,7 @@ services:
       blockchain-node:
         condition: service_healthy
     networks:
-      - bm-network
+      - bm-peer-net
 
   frontend:
     build:
@@ -80,13 +81,13 @@ services:
     depends_on:
       - api-server
     networks:
-      - bm-network
+      - bm-peer-net
 
 volumes:
-  postgres-data:
-  redis-data:
-  blockchain-data:
+  bm-peer-postgres:
+  bm-peer-redis:
+  bm-peer-blockchain:
 
 networks:
-  bm-network:
+  bm-peer-net:
     driver: bridge

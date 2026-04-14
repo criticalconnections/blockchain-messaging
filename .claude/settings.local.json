@@ -11,7 +11,12 @@
       "Bash(docker-compose down:*)",
       "Bash(curl -s http://localhost/api/health)",
       "Bash(curl -s -o /dev/null -w \"%{http_code}\" http://localhost/)",
-      "Bash(chmod +x:*)"
+      "Bash(chmod +x:*)",
+      "Bash(git commit:*)",
+      "Bash(gh auth:*)",
+      "Bash(where.exe gh:*)",
+      "Bash(git remote:*)",
+      "Bash(git push:*)"
     ]
   }
 }

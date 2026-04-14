@@ -1,14 +1,18 @@
 import express from 'express';
 import { WebSocketServer, WebSocket } from 'ws';
 import http from 'http';
-import { generateSigningKeyPair, publicKeyToBase64, base64ToPublicKey } from '@bm/crypto';
+import { generateSigningKeyPair, publicKeyToBase64 } from '@bm/crypto';
 import { encodeBase64, decodeBase64 } from '@bm/crypto';
 import { Store } from './store.js';
 import { Mempool } from './mempool.js';
 import { Chain } from './chain.js';
 import { Miner } from './miner.js';
 import { Pruner } from './pruner.js';
+import { RelayServer, PeerClient } from './p2p.js';
+import { validateTransaction } from './transaction.js';
 import type { Transaction, Block } from './types.js';
+
+export type NodeMode = 'standalone' | 'relay' | 'peer';
 
 export interface NodeConfig {
   port: number;
@@ -16,6 +20,8 @@ export interface NodeConfig {
   blockIntervalMs: number;
   maxBlockSize: number;
   pruneIntervalMs: number;
+  mode: NodeMode;
+  relayUrl?: string;
 }
 
 const DEFAULT_CONFIG: NodeConfig = {
@@ -24,17 +30,20 @@ const DEFAULT_CONFIG: NodeConfig = {
   blockIntervalMs: 5000,
   maxBlockSize: 100,
   pruneIntervalMs: 60000,
+  mode: 'standalone',
 };
 
 export class BlockchainNode {
   private store: Store;
   private mempool: Mempool;
   private chain: Chain;
-  private miner!: Miner;
+  private miner: Miner | null = null;
   private pruner: Pruner;
   private config: NodeConfig;
   private eventClients: Set<WebSocket> = new Set();
   private server: http.Server | null = null;
+  private relayServer: RelayServer | null = null;
+  private peerClient: PeerClient | null = null;
 
   constructor(config?: Partial<NodeConfig>) {
     this.config = { ...DEFAULT_CONFIG, ...config };
@@ -50,40 +59,74 @@ export class BlockchainNode {
     await this.store.open();
     const { signingKey, publicKey } = await this.initValidator();
 
-    this.miner = new Miner(this.mempool, this.store, this.chain, {
-      blockIntervalMs: this.config.blockIntervalMs,
-      maxBlockSize: this.config.maxBlockSize,
-      validatorSigningKey: signingKey,
-      validatorPublicKey: publicKey,
-    });
-
     this.chain.addValidator(publicKey);
 
-    this.miner.on('block:confirmed', (block: Block) => {
-      this.broadcast({
-        type: 'BLOCK_CONFIRMED',
-        data: { block },
+    if (this.config.mode === 'peer') {
+      // Peer mode: no miner, connect to relay
+      await this.startRpcServer();
+      this.pruner.start();
+
+      if (!this.config.relayUrl) {
+        throw new Error('RELAY_URL is required in peer mode');
+      }
+
+      this.peerClient = new PeerClient(
+        this.config.relayUrl,
+        this.store,
+        this.chain,
+        publicKey.slice(0, 16),
+        publicKey
+      );
+
+      this.peerClient.on('block:confirmed', (block: Block) => {
+        this.broadcast({ type: 'BLOCK_CONFIRMED', data: { block } });
       });
-    });
 
-    this.pruner.on('message:pruned', (data: { transactionId: string; recipient?: string }) => {
-      this.broadcast({
-        type: 'MESSAGE_PRUNED',
-        data,
+      this.peerClient.connect();
+
+      console.log(`Blockchain PEER node running on port ${this.config.port}`);
+      console.log(`Relay: ${this.config.relayUrl}`);
+      console.log(`Peer ID: ${publicKey.slice(0, 16)}...`);
+    } else {
+      // Relay or standalone mode: run miner
+      this.miner = new Miner(this.mempool, this.store, this.chain, {
+        blockIntervalMs: this.config.blockIntervalMs,
+        maxBlockSize: this.config.maxBlockSize,
+        validatorSigningKey: signingKey,
+        validatorPublicKey: publicKey,
       });
-    });
 
-    this.miner.start();
-    this.pruner.start();
-    await this.startRpcServer();
+      this.miner.on('block:confirmed', (block: Block) => {
+        this.broadcast({ type: 'BLOCK_CONFIRMED', data: { block } });
+        // In relay mode, also broadcast to P2P peers
+        this.relayServer?.broadcastBlock(block);
+      });
 
-    console.log(`Blockchain node running on port ${this.config.port}`);
-    console.log(`Validator: ${publicKey.slice(0, 16)}...`);
+      this.pruner.on('message:pruned', (data: { transactionId: string; recipient?: string }) => {
+        this.broadcast({ type: 'MESSAGE_PRUNED', data });
+      });
+
+      this.miner.start();
+      this.pruner.start();
+      await this.startRpcServer();
+
+      // In relay mode, attach P2P relay server
+      if (this.config.mode === 'relay' && this.server) {
+        this.relayServer = new RelayServer(this.store, this.mempool, publicKey);
+        this.relayServer.attach(this.server);
+      }
+
+      const modeLabel = this.config.mode === 'relay' ? 'RELAY' : 'STANDALONE';
+      console.log(`Blockchain ${modeLabel} node running on port ${this.config.port}`);
+      console.log(`Validator: ${publicKey.slice(0, 16)}...`);
+    }
   }
 
   async stop(): Promise<void> {
-    this.miner.stop();
+    this.miner?.stop();
     this.pruner.stop();
+    this.relayServer?.stop();
+    this.peerClient?.disconnect();
     for (const ws of this.eventClients) ws.close();
     if (this.server) this.server.close();
     await this.store.close();
@@ -123,15 +166,32 @@ export class BlockchainNode {
     const app = express();
     app.use(express.json({ limit: '1mb' }));
 
-    app.post('/tx', (req, res) => {
-      const tx = req.body as Transaction;
-      const added = this.mempool.add(tx);
-      if (added) {
+    // In peer mode, forward transactions to relay instead of local mempool
+    if (this.config.mode === 'peer') {
+      app.post('/tx', (req, res) => {
+        const tx = req.body as Transaction;
+        if (!validateTransaction(tx)) {
+          res.status(400).json({ success: false, error: 'Invalid transaction' });
+          return;
+        }
+        if (!this.peerClient?.isConnected) {
+          res.status(503).json({ success: false, error: 'Not connected to relay' });
+          return;
+        }
+        this.peerClient.forwardTransaction(tx);
         res.json({ success: true, txId: tx.id });
-      } else {
-        res.status(400).json({ success: false, error: 'Invalid or duplicate transaction' });
-      }
-    });
+      });
+    } else {
+      app.post('/tx', (req, res) => {
+        const tx = req.body as Transaction;
+        const added = this.mempool.add(tx);
+        if (added) {
+          res.json({ success: true, txId: tx.id });
+        } else {
+          res.status(400).json({ success: false, error: 'Invalid or duplicate transaction' });
+        }
+      });
+    }
 
     app.get('/tx/:id', async (req, res) => {
       const tx = await this.store.getTransaction(req.params.id);
@@ -168,7 +228,7 @@ export class BlockchainNode {
     });
 
     app.get('/health', (_req, res) => {
-      res.json({ status: 'ok' });
+      res.json({ status: 'ok', mode: this.config.mode });
     });
 
     this.server = http.createServer(app);
@@ -195,6 +255,8 @@ if (isMainModule) {
     blockIntervalMs: parseInt(process.env.BLOCK_INTERVAL_MS || '5000'),
     maxBlockSize: parseInt(process.env.MAX_BLOCK_SIZE || '100'),
     pruneIntervalMs: parseInt(process.env.PRUNE_INTERVAL_MS || '60000'),
+    mode: (process.env.NODE_MODE as NodeMode) || 'standalone',
+    relayUrl: process.env.RELAY_URL,
   });
 
   node.start().catch((err) => {

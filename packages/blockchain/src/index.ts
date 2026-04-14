@@ -11,4 +11,5 @@ export type { MinerConfig } from './miner.js';
 export { Pruner } from './pruner.js';
 export type { PrunerConfig } from './pruner.js';
 export { BlockchainNode } from './node.js';
-export type { NodeConfig } from './node.js';
+export type { NodeConfig, NodeMode } from './node.js';
+export { RelayServer, PeerClient } from './p2p.js';
