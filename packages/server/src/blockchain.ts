@@ -54,6 +54,22 @@ export class BlockchainClient {
     return res.json() as Promise<Block>;
   }
 
+  async searchDirectory(query: string): Promise<Array<{
+    username: string;
+    encPublicKey: string;
+    signPublicKey: string;
+  }>> {
+    const res = await fetch(
+      `${config.blockchainNodeUrl}/directory/search?q=${encodeURIComponent(query)}`
+    );
+    if (!res.ok) return [];
+    return res.json() as Promise<Array<{
+      username: string;
+      encPublicKey: string;
+      signPublicKey: string;
+    }>>;
+  }
+
   subscribeToEvents(handler: (event: BlockchainEvent) => void): () => void {
     this.eventHandlers.push(handler);
     this.ensureWsConnection();

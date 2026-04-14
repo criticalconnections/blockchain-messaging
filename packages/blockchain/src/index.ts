@@ -5,6 +5,7 @@ export { computeMerkleRoot } from './merkle.js';
 export { createBlock, validateBlock, createGenesisBlock, hashBlock } from './block.js';
 export { Mempool } from './mempool.js';
 export { Store } from './store.js';
+export type { DirectoryEntry } from './store.js';
 export { Chain } from './chain.js';
 export { Miner } from './miner.js';
 export type { MinerConfig } from './miner.js';

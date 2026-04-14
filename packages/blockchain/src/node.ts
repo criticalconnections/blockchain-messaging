@@ -11,6 +11,7 @@ import { Pruner } from './pruner.js';
 import { RelayServer, PeerClient } from './p2p.js';
 import { validateTransaction } from './transaction.js';
 import type { Transaction, Block } from './types.js';
+import type { DirectoryEntry } from './store.js';
 
 export type NodeMode = 'standalone' | 'relay' | 'peer';
 
@@ -79,6 +80,7 @@ export class BlockchainNode {
       );
 
       this.peerClient.on('block:confirmed', (block: Block) => {
+        this.indexBlockDirectory(block);
         this.broadcast({ type: 'BLOCK_CONFIRMED', data: { block } });
       });
 
@@ -97,6 +99,7 @@ export class BlockchainNode {
       });
 
       this.miner.on('block:confirmed', (block: Block) => {
+        this.indexBlockDirectory(block);
         this.broadcast({ type: 'BLOCK_CONFIRMED', data: { block } });
         // In relay mode, also broadcast to P2P peers
         this.relayServer?.broadcastBlock(block);
@@ -151,6 +154,25 @@ export class BlockchainNode {
     await this.store.setValidatorKey(keyData);
 
     return { signingKey: keyPair.secretKey, publicKey };
+  }
+
+  private async indexBlockDirectory(block: Block): Promise<void> {
+    for (const tx of block.transactions) {
+      if (tx.type === 'KEY_PUBLISH' && tx.payload && !tx.pruned) {
+        try {
+          const data = JSON.parse(tx.payload);
+          const entry: DirectoryEntry = {
+            username: data.username,
+            encPublicKey: data.encPublicKey,
+            signPublicKey: tx.sender,
+            timestamp: tx.timestamp,
+          };
+          await this.store.putDirectoryEntry(entry);
+        } catch {
+          // skip malformed payloads
+        }
+      }
+    }
   }
 
   private broadcast(event: unknown): void {
@@ -224,6 +246,25 @@ export class BlockchainNode {
         res.json(block);
       } else {
         res.status(404).json({ error: 'Block not found' });
+      }
+    });
+
+    app.get('/directory/search', async (req, res) => {
+      const q = req.query.q as string;
+      if (!q || q.length < 2) {
+        res.json([]);
+        return;
+      }
+      const results = await this.store.searchDirectory(q);
+      res.json(results);
+    });
+
+    app.get('/directory/:key', async (req, res) => {
+      const entry = await this.store.getDirectoryEntry(req.params.key);
+      if (entry) {
+        res.json(entry);
+      } else {
+        res.status(404).json({ error: 'Not found' });
       }
     });
 

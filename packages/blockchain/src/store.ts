@@ -139,4 +139,45 @@ export class Store {
   async setValidatorKey(keyData: string): Promise<void> {
     await this.db.put('meta:validatorKey', keyData);
   }
+
+  // --- User directory (populated from KEY_PUBLISH transactions) ---
+
+  async putDirectoryEntry(entry: DirectoryEntry): Promise<void> {
+    await this.db.put(`dir:${entry.signPublicKey}`, JSON.stringify(entry));
+    await this.db.put(`dir-name:${entry.username.toLowerCase()}`, entry.signPublicKey);
+  }
+
+  async getDirectoryEntry(signPublicKey: string): Promise<DirectoryEntry | null> {
+    try {
+      const data = await this.db.get(`dir:${signPublicKey}`);
+      return JSON.parse(data) as DirectoryEntry;
+    } catch {
+      return null;
+    }
+  }
+
+  async searchDirectory(query: string): Promise<DirectoryEntry[]> {
+    const results: DirectoryEntry[] = [];
+    const q = query.toLowerCase();
+
+    for await (const [key, value] of this.db.iterator({
+      gte: 'dir:',
+      lt: 'dir:\xFF',
+    })) {
+      const entry = JSON.parse(value) as DirectoryEntry;
+      if (entry.username.toLowerCase().includes(q)) {
+        results.push(entry);
+      }
+      if (results.length >= 20) break;
+    }
+
+    return results;
+  }
+}
+
+export interface DirectoryEntry {
+  username: string;
+  encPublicKey: string;
+  signPublicKey: string;
+  timestamp: number;
 }

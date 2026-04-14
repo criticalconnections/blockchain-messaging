@@ -1,13 +1,18 @@
 import { create } from 'zustand';
+import { v4 as uuidv4 } from 'uuid';
 import {
   generateEncryptionKeyPair,
   generateSigningKeyPair,
   publicKeyToBase64,
+  canonicalize,
+  signData,
 } from '@bm/crypto';
 import { api, type UserPublic } from '../api/http.js';
 import { wsClient } from '../api/ws.js';
 import { storeIdentity, clearKeyStore } from '../crypto/keystore.js';
 import { clearSessionCache } from '../crypto/session.js';
+
+const encoder = new TextEncoder();
 
 interface AuthState {
   user: UserPublic | null;
@@ -52,6 +57,25 @@ export const useAuthStore = create<AuthState>((set) => ({
       localStorage.setItem('bm-token', res.token);
       localStorage.setItem('bm-user', JSON.stringify(res.user));
       wsClient.connect(res.token);
+
+      // Publish identity to blockchain for cross-peer discovery
+      try {
+        const id = uuidv4();
+        const timestamp = Date.now();
+        const payload = JSON.stringify({ username, encPublicKey });
+        const signable: Record<string, unknown> = {
+          id,
+          type: 'KEY_PUBLISH',
+          sender: signPublicKey,
+          payload,
+          timestamp,
+        };
+        const canonical = canonicalize(signable);
+        const signature = signData(encoder.encode(canonical), signKeyPair.secretKey);
+        await api.messages.send({ id, type: 'KEY_PUBLISH', sender: signPublicKey, payload, timestamp, signature });
+      } catch {
+        // Non-fatal: local registration succeeded
+      }
 
       set({ user: res.user, token: res.token, loading: false });
     } catch (err) {
